@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.responses import JSONResponse
 from pydub import AudioSegment
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 import base64
 import librosa
 import numpy as np
@@ -34,14 +34,14 @@ class VoiceRequest(BaseModel):
     audioFormat: str 
     audioBase64: str
     
-    @validator('language')
+    @field_validator('language')
     def validate_language(cls, v):
         valid_languages = ["Tamil", "English", "Hindi", "Malayalam", "Telugu"]
         if v not in valid_languages:
             raise ValueError(f"Language must be one of: {', '.join(valid_languages)}")
         return v
     
-    @validator('audioFormat')
+    @field_validator('audioFormat')
     def validate_format(cls, v):
         if v.lower() != "mp3":
             raise ValueError("Audio format must be mp3")

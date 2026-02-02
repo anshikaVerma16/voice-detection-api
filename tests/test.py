@@ -1,7 +1,7 @@
 import base64
 import requests
 
-with open("data/ai/english/ai_gtts_5.mp3", "rb") as f:
+with open("tests/test.mp3", "rb") as f:
     audio = f.read()
 audio_base64 = base64.b64encode(audio).decode('utf-8')
 
