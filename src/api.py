@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydub import AudioSegment
 from pydantic import BaseModel, field_validator
 import base64
@@ -18,11 +19,20 @@ app = FastAPI(
     version="1.0.0"
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],  
+    allow_headers=["*"],  
+)
+
 try:
     rf_model = joblib.load('models/model_rf.pkl')
     xgb_model = joblib.load('models/model_xgb.pkl')
     gb_model = joblib.load('models/model_gb.pkl')
     label_encoder = joblib.load('models/label_encoder.pkl')
+    print("Models loaded successfully!")
 except Exception as e:
     print(f"Error loading models: {e}")
     exit(1)
@@ -35,6 +45,7 @@ class VoiceRequest(BaseModel):
     audioBase64: str
     
     @field_validator('language')
+    @classmethod
     def validate_language(cls, v):
         valid_languages = ["Tamil", "English", "Hindi", "Malayalam", "Telugu"]
         if v not in valid_languages:
@@ -42,6 +53,7 @@ class VoiceRequest(BaseModel):
         return v
     
     @field_validator('audioFormat')
+    @classmethod
     def validate_format(cls, v):
         if v.lower() != "mp3":
             raise ValueError("Audio format must be mp3")
@@ -198,7 +210,7 @@ def extract_all_features(audio_bytes):
             status_code=400,
             detail=f"Audio processing failed: {str(e)}"
         )
-
+    
 def generate_explanation(classification, confidence, features):
     
     if classification == "AI_GENERATED":
@@ -286,6 +298,36 @@ def generate_explanation(classification, confidence, features):
     
     return explanations[idx]
 
+@app.get("/")
+def root():
+    return {
+        "message": "AI Voice Detection API",
+        "version": "1.0.0",
+        "status": "running",
+        "supported_languages": ["Tamil", "English", "Hindi", "Malayalam", "Telugu"],
+        "endpoint": "/api/voice-detection",
+        "accuracy": "99.68%"
+    }
+
+@app.get("/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "models_loaded": True,
+        "ensemble": "RandomForest + XGBoost + GradientBoosting"
+    }
+
+@app.options("/api/voice-detection")
+async def options_handler():
+    return JSONResponse(
+        content={"message": "OK"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
 @app.post("/api/voice-detection", response_model=VoiceResponse)
 async def detect_voice(request: VoiceRequest, x_api_key: str = Header(None, alias="x-api-key")):
     
@@ -350,7 +392,7 @@ async def detect_voice(request: VoiceRequest, x_api_key: str = Header(None, alia
     explanation = generate_explanation(final_classification, confidence, features)
     
     processing_time = time.time() - start_time
-    print(f"Processed in {processing_time:.2f}s | {request.language} | {final_classification} | {confidence:.2f}")
+    print(f"✅ Processed in {processing_time:.2f}s | {request.language} | {final_classification} | {confidence:.2f}")
     
     return VoiceResponse(
         status="success",
@@ -359,25 +401,6 @@ async def detect_voice(request: VoiceRequest, x_api_key: str = Header(None, alia
         confidenceScore=round(confidence, 2),
         explanation=explanation
     )
-
-@app.get("/")
-def root():
-    return {
-        "message": "AI Voice Detection API",
-        "version": "1.0.0",
-        "status": "running",
-        "supported_languages": ["Tamil", "English", "Hindi", "Malayalam", "Telugu"],
-        "endpoint": "/api/voice-detection",
-        "accuracy": "99.68%"
-    }
-
-@app.get("/health")
-def health_check():
-    return {
-        "status": "healthy",
-        "models_loaded": True,
-        "ensemble": "RandomForest + XGBoost + GradientBoosting"
-    }
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
@@ -399,21 +422,25 @@ async def general_exception_handler(request: Request, exc: Exception):
         }
     )
 
+
 if __name__ == "__main__":
     import uvicorn
     
+
     print("AI VOICE DETECTION API")
-    print("Local:  http://localhost:8000")
-    print("Docs:   http://localhost:8000/docs")
-    print("Health: http://localhost:8000/health")
-    print("API Key: sk_test_123456789")
+    print(f"Local:  http://localhost:8000")
+    print(f"Docs:   http://localhost:8000/docs")
+    print(f"Health: http://localhost:8000/health")
+    print(f"API Key: {VALID_API_KEY}")
+    print()
     print("Supported Languages:")
     print("   • Tamil")
     print("   • English")
     print("   • Hindi")
     print("   • Malayalam")
     print("   • Telugu")
-    print("⚡ Model Accuracy: 99.68%")
+    print()
+    print("Model Accuracy: 99.68%")
     print("Ensemble: RF + XGBoost + GB")
     
     uvicorn.run(app, host="0.0.0.0", port=8000)
