@@ -12,6 +12,7 @@ import os
 from scipy import signal
 from scipy.stats import skew, kurtosis
 import time
+from typing import Optional
 
 app = FastAPI(
     title="AI Voice Detection API",
@@ -43,7 +44,8 @@ VALID_API_KEY = os.getenv("API_KEY", "sk_test_123456789")
 class VoiceRequest(BaseModel):
     language: str 
     audioFormat: str 
-    audioBase64: str
+    audioBase64: Optional[str] = None
+    audioBase64Format: Optional[str] = None
     
     @field_validator('language')
     @classmethod
@@ -59,6 +61,9 @@ class VoiceRequest(BaseModel):
         if v.lower() != "mp3":
             raise ValueError("Audio format must be mp3")
         return v
+    
+    def get_audio_data(self):
+        return self.audioBase64 or self.audioBase64Format
 
 class VoiceResponse(BaseModel):
     status: str 
@@ -317,126 +322,144 @@ def health_check():
         "ensemble": "RandomForest + XGBoost + GradientBoosting"
     }
 
-@app.options("/api/voice-detection")
-async def voice_detection_options():
-    return JSONResponse(
-        content={"message": "OK"},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-        }
-    )
-
-@app.get("/api/voice-detection")
-async def voice_detection_info():
-    return JSONResponse(
-        content={
+@app.api_route("/api/voice-detection", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+async def voice_detection_handler(request: Request):
+    
+    if request.method == "HEAD":
+        return JSONResponse(
+            content={},
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "X-API-Status": "healthy"
+            }
+        )
+    
+    if request.method == "OPTIONS":
+        return JSONResponse(
+            content={"message": "OK"},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            }
+        )
+    
+    if request.method == "GET":
+        return {
             "status": "success",
             "message": "Voice Detection API is running. Use POST to submit audio.",
             "method": "POST",
-            "required_headers": {
-                "x-api-key": "Your API key",
-                "Content-Type": "application/json"
-            },
+            "required_headers": ["x-api-key"],
             "required_body": {
                 "language": "English | Tamil | Hindi | Malayalam | Telugu",
                 "audioFormat": "mp3",
-                "audioBase64": "base64 encoded mp3 audio"
-            },
-            "example": {
-                "language": "English",
-                "audioFormat": "mp3",
-                "audioBase64": "SGVsbG8gV29ybGQ="
+                "audioBase64": "base64 encoded mp3"
             }
-        },
-        headers={
-            "Access-Control-Allow-Origin": "*"
         }
-    )
-
-@app.post("/api/voice-detection", response_model=VoiceResponse)
-async def detect_voice(
-    request: VoiceRequest, 
-    x_api_key: str = Header(None, alias="x-api-key")
-):
-   
-    start_time = time.time()
     
-
-    if not x_api_key or x_api_key != VALID_API_KEY:
-        return JSONResponse(
-            status_code=401,
-            content={
-                "status": "error",
-                "message": "Invalid or missing API key"
-            },
-            headers={"Access-Control-Allow-Origin": "*"}
+    if request.method in ["POST", "PUT", "PATCH"]:
+        start_time = time.time()
+        
+        x_api_key = request.headers.get("x-api-key") or request.headers.get("X-API-Key")
+        
+        if not x_api_key or x_api_key != VALID_API_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "status": "error",
+                    "message": "Invalid API key or malformed request"
+                }
+            )
+        
+        try:
+            body = await request.json()
+            voice_request = VoiceRequest(**body)
+        except Exception as e:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "message": "Invalid base64 audio encoding"
+                }
+            )
+        
+        audio_data = voice_request.get_audio_data()
+        if not audio_data:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "message": "Invalid base64 audio encoding"
+                }
+            )
+        
+        try:
+            audio_bytes = base64.b64decode(audio_data)
+        except Exception as e:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "message": "Invalid base64 audio encoding"
+                }
+            )
+        
+        try:
+            features = extract_all_features(audio_bytes)
+        except Exception as e:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "message": f"Feature extraction failed: {str(e)}"
+                }
+            )
+        
+        try:
+            rf_pred = rf_model.predict(features)[0]
+            rf_proba = np.max(rf_model.predict_proba(features)[0])
+            
+            xgb_pred_encoded = xgb_model.predict(features)[0]
+            xgb_pred = label_encoder.inverse_transform([xgb_pred_encoded])[0]
+            xgb_proba = np.max(xgb_model.predict_proba(features)[0])
+            
+            gb_pred = gb_model.predict(features)[0]
+            gb_proba = np.max(gb_model.predict_proba(features)[0])
+            
+            votes = [rf_pred, xgb_pred, gb_pred]
+            final_classification = max(set(votes), key=votes.count)
+            
+            confidence = float((rf_proba + xgb_proba + gb_proba) / 3)
+            
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "message": f"Prediction failed: {str(e)}"
+                }
+            )
+        
+        explanation = generate_explanation(final_classification, confidence, features)
+        
+        processing_time = time.time() - start_time
+        print(f"Processed in {processing_time:.2f}s | {voice_request.language} | {final_classification} | {confidence:.2f}")
+        
+        return VoiceResponse(
+            status="success",
+            language=voice_request.language,
+            classification=final_classification,
+            confidenceScore=round(confidence, 2),
+            explanation=explanation
         )
     
-    try:
-        audio_bytes = base64.b64decode(request.audioBase64)
-        if len(audio_bytes) == 0:
-            raise ValueError("Empty audio data")
-    except Exception as e:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "error",
-                "message": f"Invalid base64 audio encoding: {str(e)}"
-            },
-            headers={"Access-Control-Allow-Origin": "*"}
-        )
-    
-    try:
-        features = extract_all_features(audio_bytes)
-    except Exception as e:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "error",
-                "message": f"Feature extraction failed: {str(e)}"
-            },
-            headers={"Access-Control-Allow-Origin": "*"}
-        )
-    
-    try:
-        rf_pred = rf_model.predict(features)[0]
-        rf_proba = np.max(rf_model.predict_proba(features)[0])
-        
-        xgb_pred_encoded = xgb_model.predict(features)[0]
-        xgb_pred = label_encoder.inverse_transform([xgb_pred_encoded])[0]
-        xgb_proba = np.max(xgb_model.predict_proba(features)[0])
-        
-        gb_pred = gb_model.predict(features)[0]
-        gb_proba = np.max(gb_model.predict_proba(features)[0])
-        
-        votes = [rf_pred, xgb_pred, gb_pred]
-        final_classification = max(set(votes), key=votes.count)
-        
-        confidence = float((rf_proba + xgb_proba + gb_proba) / 3)
-        
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": f"Prediction failed: {str(e)}"
-            },
-            headers={"Access-Control-Allow-Origin": "*"}
-        )
- 
-    explanation = generate_explanation(final_classification, confidence, features)
-    
-    processing_time = time.time() - start_time
-    print(f"Processed in {processing_time:.2f}s | {request.language} | {final_classification} | Confidence: {confidence:.2%}")
-    
-    return VoiceResponse(
-        status="success",
-        language=request.language,
-        classification=final_classification,
-        confidenceScore=round(confidence, 2),
-        explanation=explanation
+    return JSONResponse(
+        status_code=405,
+        content={
+            "status": "error",
+            "message": "Method Not Allowed"
+        }
     )
 
 @app.exception_handler(HTTPException)
@@ -446,20 +469,17 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         content={
             "status": "error",
             "message": exc.detail
-        },
-        headers={"Access-Control-Allow-Origin": "*"}
+        }
     )
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    print(f"Unhandled exception: {str(exc)}")
     return JSONResponse(
         status_code=500,
         content={
             "status": "error",
             "message": "Internal server error"
-        },
-        headers={"Access-Control-Allow-Origin": "*"}
+        }
     )
 
 if __name__ == "__main__":
@@ -470,19 +490,15 @@ if __name__ == "__main__":
     print(f"Docs:       http://localhost:8000/docs")
     print(f"Health:     http://localhost:8000/health")
     print(f"API Key:    {VALID_API_KEY}")
-
+    print()
     print("Supported Languages:")
     print("   • Tamil")
     print("   • English")
     print("   • Hindi")
     print("   • Malayalam")
     print("   • Telugu")
-    print(" Model Accuracy: 99.68%")
+    print()
+    print("Model Accuracy: 99.68%")
     print("Ensemble: RF + XGBoost + GB")
     
-    uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=8000,
-        log_level="info"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=8000)
