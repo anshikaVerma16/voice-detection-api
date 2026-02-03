@@ -24,7 +24,8 @@ app.add_middleware(
     allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],  
-    allow_headers=["*"],  
+    allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 try:
@@ -59,7 +60,6 @@ class VoiceRequest(BaseModel):
             raise ValueError("Audio format must be mp3")
         return v
 
-
 class VoiceResponse(BaseModel):
     status: str 
     language: str 
@@ -84,44 +84,44 @@ def extract_all_features(audio_bytes):
    
         features = []
         
-        # get mfcc features
+        # MFCC features
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
         mfcc_mean = np.mean(mfcc, axis=1)
         features.extend(mfcc_mean.tolist()) 
         
-        # spectral centroid
+        # Spectral centroid
         features.append(float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr))))
         features.append(float(np.std(librosa.feature.spectral_centroid(y=y, sr=sr))))
         
-        # spectral rolloff
+        # Spectral rolloff
         features.append(float(np.mean(librosa.feature.spectral_rolloff(y=y, sr=sr))))
         features.append(float(np.std(librosa.feature.spectral_rolloff(y=y, sr=sr))))
         
-        # spectral bandwidth
+        # Spectral bandwidth
         features.append(float(np.mean(librosa.feature.spectral_bandwidth(y=y, sr=sr))))
         features.append(float(np.std(librosa.feature.spectral_bandwidth(y=y, sr=sr))))
         
-        # spectral contrast
+        # Spectral contrast
         features.append(float(np.mean(librosa.feature.spectral_contrast(y=y, sr=sr))))
         features.append(float(np.std(librosa.feature.spectral_contrast(y=y, sr=sr))))
         
-        # spectral flux
+        # Spectral flux
         spec = np.abs(librosa.stft(y))
         flux = np.sqrt(np.sum(np.diff(spec, axis=1)**2, axis=0))
         features.append(float(np.mean(flux)))
         features.append(float(np.std(flux)))
         
-        # zero crossing rate
+        # Zero crossing rate
         zcr = librosa.feature.zero_crossing_rate(y)
         features.append(float(np.mean(zcr)))
         features.append(float(np.std(zcr)))
         
-        # chroma features
+        # Chroma features
         chroma = librosa.feature.chroma_stft(y=y, sr=sr)
         features.append(float(np.mean(chroma)))
         features.append(float(np.std(chroma)))
 
-        # pitch tracking
+        # Pitch tracking
         pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
         pitch_values = []
         for t in range(pitches.shape[1]):
@@ -138,13 +138,13 @@ def extract_all_features(audio_bytes):
         else:
             features.extend([0.0, 0.0, 0.0, 0.0])
         
-        # harmonic to noise ratio
+        # Harmonic to noise ratio
         harmonic = librosa.effects.harmonic(y)
         percussive = librosa.effects.percussive(y)
         hnr = np.sum(harmonic**2) / (np.sum(percussive**2) + 1e-6)
         features.append(float(np.log(hnr + 1)))
         
-        # jitter calculation
+        # Jitter calculation
         if len(pitch_values) > 1:
             pitch_diffs = np.abs(np.diff(pitch_values))
             jitter = np.mean(pitch_diffs) / (np.mean(pitch_values) + 1e-6)
@@ -152,7 +152,7 @@ def extract_all_features(audio_bytes):
         else:
             features.append(0.0)
         
-        # shimmer calculation
+        # Shimmer calculation
         amplitude = np.abs(librosa.stft(y))
         amp_mean = np.mean(amplitude, axis=0)
         if len(amp_mean) > 1:
@@ -162,7 +162,7 @@ def extract_all_features(audio_bytes):
         else:
             features.append(0.0)
 
-        # formant peaks
+        # Formant peaks
         try:
             spec = np.abs(librosa.stft(y))
             spec_mean = np.mean(spec, axis=1)
@@ -176,17 +176,17 @@ def extract_all_features(audio_bytes):
         except:
             features.extend([0.0, 0.0, 0.0])
         
-        # rms energy
+        # RMS energy
         rms = librosa.feature.rms(y=y)
         features.append(float(np.mean(rms)))
         features.append(float(np.std(rms)))
         features.append(float(np.max(rms) / (np.mean(rms) + 1e-6)))
         
-        # tempo
+        # Tempo
         tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
         features.append(float(tempo))
         
-        # voiced frames
+        # Voiced frames
         voiced_frames = librosa.effects.split(y, top_db=20)
         if len(voiced_frames) > 0:
             voiced_duration = sum([end - start for start, end in voiced_frames])
@@ -195,7 +195,7 @@ def extract_all_features(audio_bytes):
         else:
             features.extend([0.0, 0.0])
         
-        # statistical features
+        # Statistical features
         features.append(float(skew(y)))
         features.append(float(kurtosis(y)))
         features.append(float(np.median(np.abs(y))))
@@ -210,7 +210,7 @@ def extract_all_features(audio_bytes):
             status_code=400,
             detail=f"Audio processing failed: {str(e)}"
         )
-    
+
 def generate_explanation(classification, confidence, features):
     
     if classification == "AI_GENERATED":
@@ -318,53 +318,74 @@ def health_check():
     }
 
 @app.options("/api/voice-detection")
-async def options_handler():
+async def voice_detection_options():
     return JSONResponse(
         content={"message": "OK"},
         headers={
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "*",
         }
     )
 
 @app.get("/api/voice-detection")
-def voice_detection_get():
-    return {
-        "status": "success",
-        "message": "Voice Detection API is running. Use POST to submit audio.",
-        "method": "POST",
-        "required_headers": ["x-api-key"],
-        "required_body": {
-            "language": "English | Tamil | Hindi | Malayalam | Telugu",
-            "audioFormat": "mp3",
-            "audioBase64": "base64 encoded mp3"
+async def voice_detection_info():
+    return JSONResponse(
+        content={
+            "status": "success",
+            "message": "Voice Detection API is running. Use POST to submit audio.",
+            "method": "POST",
+            "required_headers": {
+                "x-api-key": "Your API key",
+                "Content-Type": "application/json"
+            },
+            "required_body": {
+                "language": "English | Tamil | Hindi | Malayalam | Telugu",
+                "audioFormat": "mp3",
+                "audioBase64": "base64 encoded mp3 audio"
+            },
+            "example": {
+                "language": "English",
+                "audioFormat": "mp3",
+                "audioBase64": "SGVsbG8gV29ybGQ="
+            }
+        },
+        headers={
+            "Access-Control-Allow-Origin": "*"
         }
-    }
+    )
 
 @app.post("/api/voice-detection", response_model=VoiceResponse)
-async def detect_voice(request: VoiceRequest, x_api_key: str = Header(None, alias="x-api-key")):
-    
+async def detect_voice(
+    request: VoiceRequest, 
+    x_api_key: str = Header(None, alias="x-api-key")
+):
+   
     start_time = time.time()
     
-    if x_api_key != VALID_API_KEY:
+
+    if not x_api_key or x_api_key != VALID_API_KEY:
         return JSONResponse(
             status_code=401,
             content={
                 "status": "error",
-                "message": "Invalid API key or malformed request"
-            }
+                "message": "Invalid or missing API key"
+            },
+            headers={"Access-Control-Allow-Origin": "*"}
         )
     
     try:
         audio_bytes = base64.b64decode(request.audioBase64)
+        if len(audio_bytes) == 0:
+            raise ValueError("Empty audio data")
     except Exception as e:
         return JSONResponse(
             status_code=400,
             content={
                 "status": "error",
-                "message": "Invalid base64 audio encoding"
-            }
+                "message": f"Invalid base64 audio encoding: {str(e)}"
+            },
+            headers={"Access-Control-Allow-Origin": "*"}
         )
     
     try:
@@ -375,7 +396,8 @@ async def detect_voice(request: VoiceRequest, x_api_key: str = Header(None, alia
             content={
                 "status": "error",
                 "message": f"Feature extraction failed: {str(e)}"
-            }
+            },
+            headers={"Access-Control-Allow-Origin": "*"}
         )
     
     try:
@@ -400,13 +422,14 @@ async def detect_voice(request: VoiceRequest, x_api_key: str = Header(None, alia
             content={
                 "status": "error",
                 "message": f"Prediction failed: {str(e)}"
-            }
+            },
+            headers={"Access-Control-Allow-Origin": "*"}
         )
-    
+ 
     explanation = generate_explanation(final_classification, confidence, features)
     
     processing_time = time.time() - start_time
-    print(f"✅ Processed in {processing_time:.2f}s | {request.language} | {final_classification} | {confidence:.2f}")
+    print(f"Processed in {processing_time:.2f}s | {request.language} | {final_classification} | Confidence: {confidence:.2%}")
     
     return VoiceResponse(
         status="success",
@@ -423,38 +446,43 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         content={
             "status": "error",
             "message": exc.detail
-        }
+        },
+        headers={"Access-Control-Allow-Origin": "*"}
     )
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
+    print(f"Unhandled exception: {str(exc)}")
     return JSONResponse(
         status_code=500,
         content={
             "status": "error",
             "message": "Internal server error"
-        }
+        },
+        headers={"Access-Control-Allow-Origin": "*"}
     )
-
 
 if __name__ == "__main__":
     import uvicorn
     
-
     print("AI VOICE DETECTION API")
-    print(f"Local:  http://localhost:8000")
-    print(f"Docs:   http://localhost:8000/docs")
-    print(f"Health: http://localhost:8000/health")
-    print(f"API Key: {VALID_API_KEY}")
-    print()
+    print(f"Local:      http://localhost:8000")
+    print(f"Docs:       http://localhost:8000/docs")
+    print(f"Health:     http://localhost:8000/health")
+    print(f"API Key:    {VALID_API_KEY}")
+
     print("Supported Languages:")
     print("   • Tamil")
     print("   • English")
     print("   • Hindi")
     print("   • Malayalam")
     print("   • Telugu")
-    print()
-    print("Model Accuracy: 99.68%")
+    print(" Model Accuracy: 99.68%")
     print("Ensemble: RF + XGBoost + GB")
     
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8000,
+        log_level="info"
+    )
