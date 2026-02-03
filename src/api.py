@@ -328,6 +328,20 @@ async def options_handler():
         }
     )
 
+@app.get("/api/voice-detection")
+def voice_detection_get():
+    return {
+        "status": "success",
+        "message": "Voice Detection API is running. Use POST to submit audio.",
+        "method": "POST",
+        "required_headers": ["x-api-key"],
+        "required_body": {
+            "language": "English | Tamil | Hindi | Malayalam | Telugu",
+            "audioFormat": "mp3",
+            "audioBase64": "base64 encoded mp3"
+        }
+    }
+
 @app.post("/api/voice-detection", response_model=VoiceResponse)
 async def detect_voice(request: VoiceRequest, x_api_key: str = Header(None, alias="x-api-key")):
     
